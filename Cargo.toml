@@ -2,7 +2,7 @@
 name = "aien-translate"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "AGPL-3.0-only"
 description = "Translation service for translate.js, backed by AIEN's own inference runtime"
 
 [dependencies]
