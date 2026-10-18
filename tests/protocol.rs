@@ -41,6 +41,11 @@ async fn start_counted() -> (String, Arc<AtomicUsize>) {
         .route("/v1/models", get(|| async { Json(json!({"data": [{"id": "fake-model"}]})) }))
         .route("/v1/chat/completions", post(fake_chat))
         .with_state(calls.clone());
+    (start_with(fake).await, calls)
+}
+
+/// Start aien-translate in front of the given fake engine.
+async fn start_with(fake: Router) -> String {
     let fl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let faddr = fl.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(fl, fake).await.unwrap() });
@@ -54,7 +59,7 @@ async fn start_counted() -> (String, Arc<AtomicUsize>) {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(l, app(state)).await.unwrap() });
-    (format!("http://{addr}"), calls)
+    format!("http://{addr}")
 }
 
 /// Post exactly the way translate.js does: hand-joined form fields, with
@@ -149,4 +154,113 @@ async fn oversized_request_is_refused() {
     let many: Vec<&str> = vec!["x y"; 60];
     let r = post_like_translate_js(&base, &many).await;
     assert_eq!(r["result"], 0);
+}
+
+fn sse(delta: &str) -> String {
+    format!("data: {}\n\n", json!({"choices": [{"index": 0, "delta": {"content": delta}}]}))
+}
+
+/// The model finishes the list, then keeps writing junk (as seen on the real
+/// server). aien-translate must hang up once the list is complete instead of
+/// waiting for the junk to end.
+#[tokio::test]
+async fn stops_reading_once_the_list_is_complete() {
+    let junk_sent = Arc::new(AtomicUsize::new(0));
+    let js = junk_sent.clone();
+    let fake = Router::new()
+        .route("/v1/models", get(|| async { Json(json!({"data": [{"id": "fake-model"}]})) }))
+        .route(
+            "/v1/chat/completions",
+            post(move |Json(req): Json<Value>| {
+                let js = js.clone();
+                async move {
+                    let items: Vec<String> =
+                        serde_json::from_str(req["messages"][1]["content"].as_str().unwrap()).unwrap();
+                    let list = serde_json::to_string(&items.iter().map(|s| format!("ZH:{s}")).collect::<Vec<_>>()).unwrap();
+                    if req["stream"] != json!(true) {
+                        // Not streaming: the whole reply, junk included, arrives only at the end.
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        let content = format!("{list}\n\n[{{\"name\": \"junk\"");
+                        return axum::response::Response::builder()
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(
+                                json!({"choices": [{"message": {"role": "assistant", "content": content}}]}).to_string(),
+                            ))
+                            .unwrap();
+                    }
+                    let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(1);
+                    tokio::spawn(async move {
+                        for piece in list.as_bytes().chunks(4) {
+                            if tx.send(Ok(sse(std::str::from_utf8(piece).unwrap()))).await.is_err() {
+                                return;
+                            }
+                        }
+                        for _ in 0..100 {
+                            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                            if tx.send(Ok(sse("{\"name\": \"junk\"} "))).await.is_err() {
+                                return;
+                            }
+                            js.fetch_add(1, Ordering::SeqCst);
+                        }
+                        let _ = tx.send(Ok("data: [DONE]\n\n".to_string())).await;
+                    });
+                    axum::response::Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)))
+                        .unwrap()
+                }
+            }),
+        );
+    let base = start_with(fake).await;
+    let t = std::time::Instant::now();
+    let r = post_like_translate_js(&base, &["alpha", "beta"]).await;
+    let took = t.elapsed();
+    assert_eq!(r["result"], 1, "{r}");
+    assert_eq!(r["text"], json!(["ZH:alpha", "ZH:beta"]));
+    assert!(took < std::time::Duration::from_millis(1500), "took {took:?}: kept reading after the list closed");
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(junk_sent.load(Ordering::SeqCst) < 10, "fake engine kept streaming: {} junk chunks", junk_sent.load(Ordering::SeqCst));
+}
+
+/// The model server answers 503 "busy, retry shortly" while it finishes a
+/// cancelled reply or while another job holds the GPU. aien-translate must
+/// wait and retry, not give up and show the original text.
+#[tokio::test]
+async fn busy_engine_is_retried() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let c = calls.clone();
+    let fake = Router::new()
+        .route("/v1/models", get(|| async { Json(json!({"data": [{"id": "fake-model"}]})) }))
+        .route(
+            "/v1/chat/completions",
+            post(move |Json(req): Json<Value>| {
+                let c = c.clone();
+                async move {
+                    if c.fetch_add(1, Ordering::SeqCst) < 2 {
+                        return axum::response::Response::builder()
+                            .status(503)
+                            .header("content-type", "application/json")
+                            .header("retry-after", "0")
+                            .body(axum::body::Body::from(
+                                json!({"error": {"message": "one generation at a time: the engine is busy with another request, retry shortly"}}).to_string(),
+                            ))
+                            .unwrap();
+                    }
+                    let items: Vec<String> =
+                        serde_json::from_str(req["messages"][1]["content"].as_str().unwrap()).unwrap();
+                    let list = serde_json::to_string(&items.iter().map(|s| format!("ZH:{s}")).collect::<Vec<_>>()).unwrap();
+                    axum::response::Response::builder()
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(
+                            json!({"choices": [{"message": {"role": "assistant", "content": list}}]}).to_string(),
+                        ))
+                        .unwrap()
+                }
+            }),
+        );
+    let base = start_with(fake).await;
+    let r = post_like_translate_js(&base, &["alpha", "beta"]).await;
+    assert_eq!(r["text"], json!(["ZH:alpha", "ZH:beta"]), "{r}");
+    assert_eq!(r["aien"]["kept_original"], 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 3, "one request, retried twice");
 }
