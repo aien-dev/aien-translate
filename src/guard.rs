@@ -15,6 +15,7 @@ fn token_re() -> &'static Regex {
             r"|`[^`\n]+`",                              // inline code
             r"|\{\{[^{}]*\}\}|\{[A-Za-z0-9_]*\}",        // {{x}} and {x} placeholders
             r"|%[sd]|%\d\$[sd]",                       // printf placeholders
+            r"|</?g\d+>|<x\d+/>",                     // inline-tag markers from scripts/translate_site.py
         ))
         .unwrap()
     })
@@ -122,6 +123,13 @@ mod tests {
     fn tidy_strips_added_backticks_only() {
         assert_eq!(tidy("Run aien start", "Führen Sie `aien start` aus"), "Führen Sie aien start aus");
         assert_eq!(tidy("Run `aien start`", " `aien start` ausführen "), "`aien start` ausführen");
+    }
+
+    #[test]
+    fn inline_tag_markers_must_survive() {
+        let src = "Read the <g1>docs</g1> and run <x2/>.";
+        assert!(check(src, "Lies die <g1>Doku</g1> und führe <x2/> aus.", &keep()).is_none());
+        assert!(check(src, "Lies die Doku und führe <x2/> aus.", &keep()).is_some());
     }
 
     #[test]

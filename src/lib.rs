@@ -25,7 +25,7 @@ use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
 /// Bump when the prompt changes, so old saved translations are not reused.
-pub const PROMPT_VERSION: &str = "p3";
+pub const PROMPT_VERSION: &str = "p4";
 
 /// Names that are never translated unless the operator overrides the list.
 pub const DEFAULT_KEEP: &[&str] = &[

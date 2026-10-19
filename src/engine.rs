@@ -66,6 +66,8 @@ impl Engine {
              - Reply with ONLY a JSON array of exactly {n} strings, in the same order. No commentary.\n\
              - Keep these exactly as written: URLs, email addresses, anything in backticks, commands, \
              file paths, code, placeholders like {{name}}, {{{{name}}}} or %s, and these names: {keep_list}.\n\
+             - Strings may contain markers like <g1>...</g1> (around words that are a link or bold) and <x2/> (code): \
+             keep every marker exactly once, around the translated words they belong to.\n\
              - Translate meaning naturally; keep punctuation style and capitalization style sensible for {to}.\n\
              - If a string is already in {to} or cannot be translated, return it unchanged.",
             to = to.english,
