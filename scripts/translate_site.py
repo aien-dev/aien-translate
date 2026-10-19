@@ -185,6 +185,36 @@ def translate_all(server, lang_id, texts, chunk_items=200, chunk_chars=20000):
     return out
 
 
+# Shown at the top of every translated page, then translated with the page. Drake 2026-10-18: make it clear
+# the translation ran on our own local model, to keep AI off data-center power.
+NOTE_CLASS = "aien-translation-note"
+NOTE_HTML = (
+    '<p class="aien-translation-note" style="margin:0;padding:10px 16px;font-size:14px;line-height:1.5;'
+    'color:var(--an-muted,#9aa4b2);border-bottom:1px solid var(--an-border,rgba(127,127,127,.25));'
+    'text-align:center">'
+    "<strong>Translated on our own machine.</strong> "
+    "AIEN's own AI model translated this page on a single computer in our lab, not in a data center. "
+    "AI data centers are putting a heavy load on power grids and adding to the emissions that warm our planet, "
+    "and we would rather not add to it. "
+    'The translation may have mistakes; the <a hreflang="en" href="/">English page</a> is the original.'
+    "</p>"
+)
+
+
+def add_note(soup):
+    """Put the translation note right under the site header (else first in <main> or <body>), once."""
+    if soup.find(class_=NOTE_CLASS):
+        return
+    note = BeautifulSoup(NOTE_HTML, "html.parser").p
+    header = soup.find("header", class_="aien-header")
+    if header is not None:
+        header.insert_after(note)
+        return
+    host = soup.find("main") or soup.body
+    if host is not None:
+        host.insert(0, note)
+
+
 def no_dashes(text, code):
     """Drake's sites use no em or en dashes; keep translations to the same rule."""
     if code in ("zh-CN", "zh-TW", "ja"):
@@ -219,6 +249,7 @@ def main():
     parsed = {p: BeautifulSoup(p.read_text(encoding="utf-8"), "html.parser") for p in pages}
     all_sources = []
     for soup in parsed.values():
+        add_note(soup)
         all_sources += [u.source for u in collect(soup)]
     unique = list(dict.fromkeys(s for s in all_sources if s))
     print(f"{len(pages)} pages, {len(unique)} unique pieces, {sum(map(len, unique))} characters")
@@ -232,6 +263,7 @@ def main():
         for page in pages:
             rel = page.relative_to(dist)
             soup = BeautifulSoup(page.read_text(encoding="utf-8"), "html.parser")
+            add_note(soup)
             for u in collect(soup):
                 tr = table.get(u.source)
                 if not tr or tr == u.source:
