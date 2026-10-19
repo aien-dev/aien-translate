@@ -32,17 +32,32 @@ impl Engine {
         if let Some(id) = m.as_ref() {
             return Ok(id.clone());
         }
-        let v: Value = self
-            .client
-            .get(format!("{}/v1/models", self.base))
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-            .map_err(|e| format!("engine unreachable: {e}"))?
-            .json()
-            .await
-            .map_err(|e| format!("engine model list unreadable: {e}"))?;
-        let id = v["data"][0]["id"].as_str().ok_or("engine serves no model")?.to_string();
+        // While the engine restarts (model swap, rebuild) the list is unreachable or empty; wait.
+        let deadline = std::time::Instant::now() + DOWN_WAIT_LIMIT;
+        let id = loop {
+            let got: Result<String, String> = async {
+                let v: Value = self
+                    .client
+                    .get(format!("{}/v1/models", self.base))
+                    .timeout(Duration::from_secs(10))
+                    .send()
+                    .await
+                    .map_err(|e| format!("engine unreachable: {e}"))?
+                    .json()
+                    .await
+                    .map_err(|e| format!("engine model list unreadable: {e}"))?;
+                Ok(v["data"][0]["id"].as_str().ok_or("engine serves no model")?.to_string())
+            }
+            .await;
+            match got {
+                Ok(id) => break id,
+                Err(e) if std::time::Instant::now() < deadline => {
+                    eprintln!("aien-translate: {e}; waiting for the engine");
+                    tokio::time::sleep(DOWN_RETRY).await;
+                }
+                Err(e) => return Err(e),
+            }
+        };
         *m = Some(id.clone());
         Ok(id)
     }
@@ -88,7 +103,13 @@ impl Engine {
         });
 
         let _permit = self.gate.acquire().await.map_err(|e| e.to_string())?;
-        let resp = self.send_when_free(&body).await?;
+        let resp = match self.send_when_free(&body).await {
+            Ok(r) => r,
+            Err(e) => {
+                *self.model.lock().await = None;
+                return Err(e);
+            }
+        };
         let status = resp.status();
         let streaming = resp
             .headers()
@@ -112,14 +133,30 @@ impl Engine {
     /// another job holds the GPU. It says how long to wait in `Retry-After`.
     async fn send_when_free(&self, body: &Value) -> Result<reqwest::Response, String> {
         let deadline = std::time::Instant::now() + BUSY_WAIT_LIMIT;
+        let down_deadline = std::time::Instant::now() + DOWN_WAIT_LIMIT;
+        let mut said_down = false;
         loop {
-            let resp = self
+            let resp = match self
                 .client
                 .post(format!("{}/v1/chat/completions", self.base))
                 .json(body)
                 .send()
                 .await
-                .map_err(|e| format!("engine request failed: {e}"))?;
+            {
+                Ok(r) => r,
+                // The engine restarts when its model is swapped or rebuilt. Wait for it to come back
+                // rather than failing every batch (which would leave whole languages in English).
+                Err(e) if e.is_connect() && std::time::Instant::now() < down_deadline => {
+                    if !said_down {
+                        eprintln!("aien-translate: engine unreachable ({e}); waiting for it to come back");
+                        said_down = true;
+                    }
+                    *self.model.lock().await = None;
+                    tokio::time::sleep(DOWN_RETRY).await;
+                    continue;
+                }
+                Err(e) => return Err(format!("engine request failed: {e}")),
+            };
             if resp.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE {
                 return Ok(resp);
             }
@@ -140,7 +177,12 @@ impl Engine {
 }
 
 /// How long to keep retrying a busy engine before giving up on a batch.
-const BUSY_WAIT_LIMIT: Duration = Duration::from_secs(120);
+const BUSY_WAIT_LIMIT: Duration = Duration::from_secs(30 * 60);
+
+/// How long to wait for an engine that is down (restarting, model being swapped) before
+/// giving up on a batch, and how often to try again meanwhile.
+const DOWN_WAIT_LIMIT: Duration = Duration::from_secs(45 * 60);
+const DOWN_RETRY: Duration = Duration::from_secs(15);
 
 /// aien-serve-http clamps `max_tokens` to this, so asking for more only hides
 /// where a reply will stop.

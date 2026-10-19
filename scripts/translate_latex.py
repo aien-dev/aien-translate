@@ -14,6 +14,7 @@ AIEN's own model and points to the English original.
 """
 import argparse
 import json
+import time
 import re
 import shutil
 import sys
@@ -466,21 +467,51 @@ def preamble_for(pre, code):
     return pre
 
 
-def translate_all(server, lang_id, texts, chunk_items=60, chunk_chars=12000):
+CHUNK_ITEMS, CHUNK_CHARS = 60, 12000
+
+
+def _ask(server, lang_id, batch):
+    body = urllib.parse.urlencode({"from": "english", "to": lang_id, "text": json.dumps(batch)}).encode()
+    req = urllib.request.Request(server.rstrip("/") + "/translate.json", body,
+                                 {"content-type": "application/x-www-form-urlencoded"})
+    for attempt in range(73):
+        try:
+            with urllib.request.urlopen(req, timeout=7200) as r:
+                d = json.load(r)
+        except OSError as e:  # aien-translate itself down or restarting
+            print(f"    translator unreachable ({e}); retrying in 5 minutes", flush=True)
+            time.sleep(300); continue
+        if d.get("result") != 1:
+            raise SystemExit(f"server refused: {d.get('info')}")
+        a = d.get("aien") or {}
+        # A whole batch back untranslated means the model is down or being swapped, not that the
+        # text is untranslatable: wait and ask again instead of writing English into the output.
+        if a.get("kept_original", 0) and not a.get("translated", 0) and not a.get("from_cache", 0) and len(batch) > 1:
+            print(f"    {lang_id}: whole batch failed ({a}); model down? retrying in 5 minutes", flush=True)
+            time.sleep(300); continue
+        return d
+    raise SystemExit(f"{lang_id}: the model stayed unavailable for 6 hours; stopping without writing")
+
+
+def translate_all(server, lang_id, texts, chunk_items=None, chunk_chars=None):
+    chunk_items, chunk_chars = chunk_items or CHUNK_ITEMS, chunk_chars or CHUNK_CHARS
     out, pending, i = {}, list(dict.fromkeys(t for t in texts if t)), 0
     while i < len(pending):
         batch, chars = [], 0
         while i < len(pending) and (not batch or (len(batch) < chunk_items and chars + len(pending[i]) <= chunk_chars)):
             batch.append(pending[i]); chars += len(pending[i]); i += 1
-        body = urllib.parse.urlencode({"from": "english", "to": lang_id, "text": json.dumps(batch)}).encode()
-        req = urllib.request.Request(server.rstrip("/") + "/translate.json", body,
-                                     {"content-type": "application/x-www-form-urlencoded"})
-        with urllib.request.urlopen(req, timeout=7200) as r:
-            d = json.load(r)
-        if d.get("result") != 1:
-            raise SystemExit(f"server refused: {d.get('info')}")
+        d = _ask(server, lang_id, batch)
         out.update(zip(batch, d["text"]))
         print(f"    {lang_id}: {i}/{len(pending)} pieces ({d.get('aien')})", flush=True)
+    # One more try for pieces that came back unchanged (a restart can fail part of a batch).
+    again = [t for t in pending if out.get(t) == t and re.search(r"[^\W\d_]{2}", t)]
+    for k in range(0, len(again), 20):
+        batch = again[k:k + 20]
+        d = _ask(server, lang_id, batch)
+        out.update((s, t) for s, t in zip(batch, d["text"]) if t != s)
+    if again:
+        left = sum(1 for t in again if out.get(t) == t)
+        print(f"    {lang_id}: retried {len(again)} unchanged pieces, {left} still unchanged", flush=True)
     return out
 
 
@@ -560,6 +591,8 @@ def main():
         result, stats, kept = build(tex, code, a.server, a.doi)
         (d / a.tex.name).write_text(result)
         (d / "kept-english.json").write_text(json.dumps(kept, ensure_ascii=False, indent=1))
+        if stats["kept_english"] > 0.05 * (stats["translated"] + stats["kept_english"]):
+            sys.exit(f"{code}: INCOMPLETE, {stats[kept_english]} pieces still in English (see kept-english.json)")
 
 
 if __name__ == "__main__":
