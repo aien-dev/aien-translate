@@ -295,6 +295,27 @@ def tikz(raw):
     return out
 
 
+DISPLAY_MATH = re.compile(r"^(\\\[|\$\$|\\begin\{(equation|align|gather|multline|eqnarray|displaymath|array)\*?\})")
+
+
+def math_text(raw):
+    """Translate multi-word \\text{...} phrases inside display math; keep the math itself."""
+    out, pos = [], 0
+    for m in re.finditer(r"\\text\{", raw):
+        if m.start() < pos:
+            continue
+        e = match_brace(raw, m.end() - 1)
+        inner = raw[m.end():e - 1]
+        kids = parse(inner)[0]
+        if re.search(r"[^\W\d_]{2,}\s+[^\W\d_]{2,}", "".join(n.text for n in kids if n.kind == "t")):
+            out.append(("raw", raw[pos:m.end()]))
+            out.append(("piece", kids))
+            out.append(("raw", "}"))
+            pos = e
+    out.append(("raw", raw[pos:]))
+    return out
+
+
 def runs(nodes):
     """Split a fragment into pieces to translate (lists of nodes) and raw LaTeX to keep."""
     out, cur = [], []
@@ -313,6 +334,8 @@ def runs(nodes):
     for n in nodes:
         if n.kind == "x" and n.raw.startswith("\\begin{tikzpicture}"):
             flush(); out.extend(tikz(n.raw))
+        elif n.kind == "x" and DISPLAY_MATH.match(n.raw) and len(math_text(n.raw)) > 1:
+            flush(); out.extend(math_text(n.raw))
         elif breaking(n):
             flush(); out.append(("raw", n.raw))
         elif n.kind == "g" and n.text in SECTION_LIKE:
