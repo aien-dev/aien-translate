@@ -2,7 +2,8 @@ use aien_translate::{app, cache::Cache, engine::Engine, AppState, Limits, DEFAUL
 use std::path::PathBuf;
 use std::sync::Arc;
 
-const USAGE: &str = "aien-translate [--listen ADDR] [--engine URL] [--cache FILE] [--keep-file FILE]
+const USAGE: &str =
+    "aien-translate [--listen ADDR] [--engine URL] [--cache FILE] [--keep-file FILE]
 
   --listen     address to serve on        (default 127.0.0.1:18097)
   --engine     AIEN inference server      (default http://127.0.0.1:18091)
@@ -19,15 +20,24 @@ async fn main() {
 
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
-        let mut val = || args.next().unwrap_or_else(|| die(&format!("{a} needs a value")));
+        let mut val = || {
+            args.next()
+                .unwrap_or_else(|| die(&format!("{a} needs a value")))
+        };
         match a.as_str() {
             "--listen" => listen = val(),
             "--engine" => engine = val(),
             "--cache" => cache = PathBuf::from(val()),
             "--keep-file" => {
                 let path = val();
-                let text = std::fs::read_to_string(&path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
-                keep = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(String::from).collect();
+                let text =
+                    std::fs::read_to_string(&path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
+                keep = text
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .map(String::from)
+                    .collect();
             }
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -39,7 +49,8 @@ async fn main() {
 
     let state = Arc::new(AppState {
         engine: Engine::new(&engine),
-        cache: Cache::open(&cache).unwrap_or_else(|e| die(&format!("cache {}: {e}", cache.display()))),
+        cache: Cache::open(&cache)
+            .unwrap_or_else(|e| die(&format!("cache {}: {e}", cache.display()))),
         keep,
         limits: Limits::default(),
     });
@@ -47,7 +58,9 @@ async fn main() {
         Ok(m) => eprintln!("aien-translate: engine {engine} serves {m}"),
         Err(e) => eprintln!("aien-translate: engine not ready yet ({e}); will retry per request"),
     }
-    let listener = tokio::net::TcpListener::bind(&listen).await.unwrap_or_else(|e| die(&format!("{listen}: {e}")));
+    let listener = tokio::net::TcpListener::bind(&listen)
+        .await
+        .unwrap_or_else(|e| die(&format!("{listen}: {e}")));
     eprintln!("aien-translate: listening on http://{listen}");
     axum::serve(listener, app(state)).await.unwrap();
 }

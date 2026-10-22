@@ -34,7 +34,9 @@ impl Cache {
                  created INTEGER NOT NULL
              );",
         )?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn key(model: &str, from: &str, to: &str, text: &str) -> String {
@@ -48,10 +50,14 @@ impl Cache {
 
     pub fn get(&self, key: &str) -> Option<String> {
         let conn = self.conn.lock().unwrap();
-        conn.query_row("SELECT output FROM translation WHERE key = ?1", params![key], |r| r.get(0))
-            .optional()
-            .ok()
-            .flatten()
+        conn.query_row(
+            "SELECT output FROM translation WHERE key = ?1",
+            params![key],
+            |r| r.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
     }
 
     pub fn put(&self, key: &str, model: &str, from: &str, to: &str, source: &str, output: &str) {

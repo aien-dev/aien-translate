@@ -29,8 +29,25 @@ pub const PROMPT_VERSION: &str = "p4";
 
 /// Names that are never translated unless the operator overrides the list.
 pub const DEFAULT_KEEP: &[&str] = &[
-    "AIEN", "AIENOS", "Aienix", "Omega", "OMEGA", "Interplane", "INTERPLANE", "Allen", "Synapse",
-    "Atlas", "Cortex", "Radicle", "Spark", "DGX", "GB10", "NVIDIA", "translate.js", "GitHub", "Rust",
+    "AIEN",
+    "AIENOS",
+    "Aienix",
+    "Omega",
+    "OMEGA",
+    "Interplane",
+    "INTERPLANE",
+    "Allen",
+    "Synapse",
+    "Atlas",
+    "Cortex",
+    "Radicle",
+    "Spark",
+    "DGX",
+    "GB10",
+    "NVIDIA",
+    "translate.js",
+    "GitHub",
+    "Rust",
     "Linux",
 ];
 
@@ -44,7 +61,10 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { max_texts: 1000, max_chars: 100_000 }
+        Self {
+            max_texts: 1000,
+            max_chars: 100_000,
+        }
     }
 }
 
@@ -167,7 +187,14 @@ pub async fn translate_texts(
                 for (src, tr) in batch.iter().zip(results) {
                     let tr = guard::tidy(src, &tr);
                     if guard::check(src, &tr, &st.keep).is_none() {
-                        st.cache.put(&cache::Cache::key(&model, from_key, to.id, src), &model, from_key, to.id, src, &tr);
+                        st.cache.put(
+                            &cache::Cache::key(&model, from_key, to.id, src),
+                            &model,
+                            from_key,
+                            to.id,
+                            src,
+                            &tr,
+                        );
                         done.insert(src.clone(), Some(tr));
                     } else {
                         done.insert(src.clone(), None);
@@ -175,7 +202,10 @@ pub async fn translate_texts(
                 }
             }
             Err(e) if batch.len() > 1 => {
-                eprintln!("aien-translate: batch of {} failed ({e}); splitting", batch.len());
+                eprintln!(
+                    "aien-translate: batch of {} failed ({e}); splitting",
+                    batch.len()
+                );
                 let mut a = batch;
                 let b = a.split_off(a.len() / 2);
                 queue.push(b);
@@ -256,7 +286,12 @@ fn fail(info: impl Into<String>) -> Json<Value> {
     Json(json!({"result": 0, "info": info.into()}))
 }
 
-async fn translate_h(State(st): State<Arc<AppState>>, uri: Uri, headers: HeaderMap, body: Bytes) -> Json<Value> {
+async fn translate_h(
+    State(st): State<Arc<AppState>>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Json<Value> {
     let p = params(&uri, &headers, &body);
     let (Some(to), Some(text)) = (p.get("to"), p.get("text")) else {
         return fail("missing 'to' or 'text'");
@@ -304,7 +339,9 @@ async fn connect_h(uri: Uri, headers: HeaderMap, body: Bytes) -> Json<Value> {
 }
 
 async fn init_h() -> Json<Value> {
-    Json(json!({"result": 1, "info": "success", "version": "1.0.0", "serviceList": ["translate.service"]}))
+    Json(
+        json!({"result": 1, "info": "success", "version": "1.0.0", "serviceList": ["translate.service"]}),
+    )
 }
 
 async fn ip_h() -> Json<Value> {
@@ -313,7 +350,9 @@ async fn ip_h() -> Json<Value> {
 
 async fn health_h(State(st): State<Arc<AppState>>) -> Json<Value> {
     match st.engine.model().await {
-        Ok(m) => Json(json!({"result": 1, "info": "ok", "model": m, "languages": langs::LANGS.len()})),
+        Ok(m) => {
+            Json(json!({"result": 1, "info": "ok", "model": m, "languages": langs::LANGS.len()}))
+        }
         Err(e) => fail(e),
     }
 }
@@ -342,9 +381,18 @@ mod tests {
 
     #[test]
     fn cut_link_pieces_stay_at_the_edges() {
-        assert_eq!(split_ws("Read the docs at https:"), ("", "Read the docs at", " https:"));
-        assert_eq!(split_ws("www.aienos.com and run"), ("www.aienos.com ", "and run", ""));
-        assert_eq!(split_ws("github.com/aien-dev/x"), ("github.com/aien-dev/x", "", ""));
+        assert_eq!(
+            split_ws("Read the docs at https:"),
+            ("", "Read the docs at", " https:")
+        );
+        assert_eq!(
+            split_ws("www.aienos.com and run"),
+            ("www.aienos.com ", "and run", "")
+        );
+        assert_eq!(
+            split_ws("github.com/aien-dev/x"),
+            ("github.com/aien-dev/x", "", "")
+        );
         assert_eq!(split_ws("Node is fast"), ("", "Node is fast", ""));
     }
 

@@ -46,7 +46,10 @@ impl Engine {
                     .json()
                     .await
                     .map_err(|e| format!("engine model list unreadable: {e}"))?;
-                Ok(v["data"][0]["id"].as_str().ok_or("engine serves no model")?.to_string())
+                Ok(v["data"][0]["id"]
+                    .as_str()
+                    .ok_or("engine serves no model")?
+                    .to_string())
             }
             .await;
             match got {
@@ -73,7 +76,11 @@ impl Engine {
     ) -> Result<Vec<String>, String> {
         let model = self.model().await?;
         let from_name = from.map(|l| l.english).unwrap_or("its original language");
-        let keep_list = if keep.is_empty() { "none".to_string() } else { keep.join(", ") };
+        let keep_list = if keep.is_empty() {
+            "none".to_string()
+        } else {
+            keep.join(", ")
+        };
         let system = format!(
             "You are a professional translator for software websites and documentation.\n\
              Translate every string in the JSON array the user sends from {from_name} into {to}.\n\
@@ -117,7 +124,10 @@ impl Engine {
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v.starts_with("text/event-stream"));
         if !status.is_success() || !streaming {
-            let v: Value = resp.json().await.map_err(|e| format!("engine reply unreadable: {e}"))?;
+            let v: Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("engine reply unreadable: {e}"))?;
             if !status.is_success() {
                 return Err(format!("engine error {status}: {}", v["error"]["message"]));
             }
@@ -148,7 +158,9 @@ impl Engine {
                 // rather than failing every batch (which would leave whole languages in English).
                 Err(e) if e.is_connect() && std::time::Instant::now() < down_deadline => {
                     if !said_down {
-                        eprintln!("aien-translate: engine unreachable ({e}); waiting for it to come back");
+                        eprintln!(
+                            "aien-translate: engine unreachable ({e}); waiting for it to come back"
+                        );
                         said_down = true;
                     }
                     *self.model.lock().await = None;
@@ -195,17 +207,25 @@ pub const ENGINE_MAX_TOKENS: usize = 4096;
 async fn read_until_list_closes(mut resp: reqwest::Response) -> Result<String, String> {
     let mut buf: Vec<u8> = Vec::new();
     let mut content = String::new();
-    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("engine stream failed: {e}"))? {
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("engine stream failed: {e}"))?
+    {
         buf.extend_from_slice(&chunk);
         while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
             let line: Vec<u8> = buf.drain(..=pos).collect();
             let line = String::from_utf8_lossy(&line);
-            let Some(data) = line.trim().strip_prefix("data:") else { continue };
+            let Some(data) = line.trim().strip_prefix("data:") else {
+                continue;
+            };
             let data = data.trim();
             if data == "[DONE]" {
                 return Ok(content);
             }
-            let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
             if let Some(err) = v.get("error") {
                 return Err(format!("engine error: {}", err["message"]));
             }
@@ -229,7 +249,9 @@ enum ListScan {
 }
 
 fn scan_list(content: &str) -> ListScan {
-    let Some(start) = content.find('[') else { return ListScan::NoList };
+    let Some(start) = content.find('[') else {
+        return ListScan::NoList;
+    };
     let (mut depth, mut in_string, mut escaped) = (0usize, false, false);
     for (i, ch) in content[start..].char_indices() {
         if in_string {
@@ -248,7 +270,10 @@ fn scan_list(content: &str) -> ListScan {
             ']' | '}' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    return ListScan::Closed { start, end: start + i };
+                    return ListScan::Closed {
+                        start,
+                        end: start + i,
+                    };
                 }
             }
             _ => {}
@@ -270,9 +295,17 @@ pub fn parse_array(content: &str, expect: usize) -> Result<Vec<String>, String> 
     let list = match scan_list(content) {
         ListScan::NoList => return Err("no JSON array in reply".into()),
         ListScan::Closed { start, end } => content[start..=end].to_string(),
-        ListScan::Open { in_string: true, .. } => return Err("reply ends in the middle of a string".into()),
-        ListScan::Open { start, in_string: false } => {
-            let mut s = content[start..].trim_end().trim_end_matches(',').to_string();
+        ListScan::Open {
+            in_string: true, ..
+        } => return Err("reply ends in the middle of a string".into()),
+        ListScan::Open {
+            start,
+            in_string: false,
+        } => {
+            let mut s = content[start..]
+                .trim_end()
+                .trim_end_matches(',')
+                .to_string();
             s.push(']');
             s
         }

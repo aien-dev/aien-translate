@@ -11,14 +11,34 @@ pub struct Lang {
     pub code: &'static str,
 }
 
-const fn l(id: &'static str, name: &'static str, english: &'static str, code: &'static str) -> Lang {
-    Lang { id, name, english, code }
+const fn l(
+    id: &'static str,
+    name: &'static str,
+    english: &'static str,
+    code: &'static str,
+) -> Lang {
+    Lang {
+        id,
+        name,
+        english,
+        code,
+    }
 }
 
 pub const LANGS: &[Lang] = &[
     l("english", "English", "English", "en"),
-    l("chinese_simplified", "简体中文", "Simplified Chinese", "zh-CN"),
-    l("chinese_traditional", "繁體中文", "Traditional Chinese", "zh-TW"),
+    l(
+        "chinese_simplified",
+        "简体中文",
+        "Simplified Chinese",
+        "zh-CN",
+    ),
+    l(
+        "chinese_traditional",
+        "繁體中文",
+        "Traditional Chinese",
+        "zh-TW",
+    ),
     l("japanese", "日本語", "Japanese", "ja"),
     l("korean", "한국어", "Korean", "ko"),
     l("spanish", "Español", "Spanish", "es"),
@@ -51,5 +71,7 @@ pub const LANGS: &[Lang] = &[
 
 pub fn find(id: &str) -> Option<&'static Lang> {
     let id = id.trim();
-    LANGS.iter().find(|l| l.id.eq_ignore_ascii_case(id) || l.code.eq_ignore_ascii_case(id))
+    LANGS
+        .iter()
+        .find(|l| l.id.eq_ignore_ascii_case(id) || l.code.eq_ignore_ascii_case(id))
 }

@@ -12,10 +12,10 @@ fn token_re() -> &'static Regex {
         Regex::new(concat!(
             r"https?://[^\s<>()\[\]]+[^\s<>()\[\].,;:!?]", // URLs
             r"|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", // emails
-            r"|`[^`\n]+`",                              // inline code
-            r"|\{\{[^{}]*\}\}|\{[A-Za-z0-9_]*\}",        // {{x}} and {x} placeholders
-            r"|%[sd]|%\d\$[sd]",                       // printf placeholders
-            r"|</?g\d+>|<x\d+/>",                     // inline-tag markers from scripts/translate_site.py
+            r"|`[^`\n]+`",                                 // inline code
+            r"|\{\{[^{}]*\}\}|\{[A-Za-z0-9_]*\}",          // {{x}} and {x} placeholders
+            r"|%[sd]|%\d\$[sd]",                           // printf placeholders
+            r"|</?g\d+>|<x\d+/>", // inline-tag markers from scripts/translate_site.py
         ))
         .unwrap()
     })
@@ -23,7 +23,10 @@ fn token_re() -> &'static Regex {
 
 /// Tokens in `source` that must appear unchanged in a translation.
 pub fn protected(source: &str, keep: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = token_re().find_iter(source).map(|m| m.as_str().to_string()).collect();
+    let mut out: Vec<String> = token_re()
+        .find_iter(source)
+        .map(|m| m.as_str().to_string())
+        .collect();
     for term in keep {
         if !term.is_empty() && contains_word(source, term) {
             out.push(term.clone());
@@ -95,7 +98,10 @@ mod tests {
 
     #[test]
     fn finds_urls_code_and_names() {
-        let p = protected("See https://aienos.com/docs. Run `aien start` with Omega {name}.", &keep());
+        let p = protected(
+            "See https://aienos.com/docs. Run `aien start` with Omega {name}.",
+            &keep(),
+        );
         assert!(p.contains(&"https://aienos.com/docs".to_string()));
         assert!(p.contains(&"`aien start`".to_string()));
         assert!(p.contains(&"Omega".to_string()));
@@ -110,7 +116,12 @@ mod tests {
     #[test]
     fn rejects_lost_link() {
         assert!(check("Visit https://x.io now", "Besuchen Sie jetzt", &keep()).is_some());
-        assert!(check("Visit https://x.io now", "Besuchen Sie jetzt https://x.io", &keep()).is_none());
+        assert!(check(
+            "Visit https://x.io now",
+            "Besuchen Sie jetzt https://x.io",
+            &keep()
+        )
+        .is_none());
     }
 
     #[test]
@@ -121,8 +132,14 @@ mod tests {
 
     #[test]
     fn tidy_strips_added_backticks_only() {
-        assert_eq!(tidy("Run aien start", "Führen Sie `aien start` aus"), "Führen Sie aien start aus");
-        assert_eq!(tidy("Run `aien start`", " `aien start` ausführen "), "`aien start` ausführen");
+        assert_eq!(
+            tidy("Run aien start", "Führen Sie `aien start` aus"),
+            "Führen Sie aien start aus"
+        );
+        assert_eq!(
+            tidy("Run `aien start`", " `aien start` ausführen "),
+            "`aien start` ausführen"
+        );
     }
 
     #[test]

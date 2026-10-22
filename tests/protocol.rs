@@ -1,11 +1,14 @@
 //! End-to-end protocol tests against a fake engine (no GPU needed).
 
 use aien_translate::{app, cache::Cache, engine::Engine, AppState, Limits};
-use axum::{extract::State, routing::{get, post}, Json, Router};
+use axum::{
+    extract::State,
+    routing::{get, post},
+    Json, Router,
+};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-
 
 /// Fake engine: "translates" by prefixing "ZH:". Misbehaves on purpose for
 /// strings containing DROPLINK (drops the URL) or BADCOUNT (wrong item count
@@ -38,7 +41,10 @@ async fn start() -> String {
 async fn start_counted() -> (String, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let fake = Router::new()
-        .route("/v1/models", get(|| async { Json(json!({"data": [{"id": "fake-model"}]})) }))
+        .route(
+            "/v1/models",
+            get(|| async { Json(json!({"data": [{"id": "fake-model"}]})) }),
+        )
         .route("/v1/chat/completions", post(fake_chat))
         .with_state(calls.clone());
     (start_with(fake).await, calls)
@@ -54,7 +60,10 @@ async fn start_with(fake: Router) -> String {
         engine: Engine::new(&format!("http://{faddr}")),
         cache: Cache::in_memory().unwrap(),
         keep: vec!["AIEN".into()],
-        limits: Limits { max_texts: 50, max_chars: 5000 },
+        limits: Limits {
+            max_texts: 50,
+            max_chars: 5000,
+        },
     });
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
@@ -66,8 +75,11 @@ async fn start_with(fake: Router) -> String {
 /// `text` = encodeURIComponent(JSON.stringify(array)).
 async fn post_like_translate_js(base: &str, texts: &[&str]) -> Value {
     let json_text = serde_json::to_string(texts).unwrap();
-    let encoded: String = form_urlencoded::byte_serialize(json_text.as_bytes()).collect::<String>().replace('+', "%20");
-    let body = format!("from=english&to=chinese_simplified&text={encoded}&browserDefaultLanguage=english");
+    let encoded: String = form_urlencoded::byte_serialize(json_text.as_bytes())
+        .collect::<String>()
+        .replace('+', "%20");
+    let body =
+        format!("from=english&to=chinese_simplified&text={encoded}&browserDefaultLanguage=english");
     reqwest::Client::new()
         .post(format!("{base}/translate.json?v=4.1.0.20260526"))
         .header("content-type", "application/x-www-form-urlencoded")
@@ -84,10 +96,22 @@ async fn post_like_translate_js(base: &str, texts: &[&str]) -> Value {
 async fn translate_js_protocol_round_trip() {
     let (base, calls) = start_counted().await;
 
-    let r = post_like_translate_js(&base, &["Hello world", "  Run AIEN + more ", "12,345", "Hello world"]).await;
+    let r = post_like_translate_js(
+        &base,
+        &["Hello world", "  Run AIEN + more ", "12,345", "Hello world"],
+    )
+    .await;
     assert_eq!(r["result"], 1, "{r}");
     let text: Vec<String> = serde_json::from_value(r["text"].clone()).unwrap();
-    assert_eq!(text, vec!["ZH:Hello world", "  ZH:Run AIEN + more ", "12,345", "ZH:Hello world"]);
+    assert_eq!(
+        text,
+        vec![
+            "ZH:Hello world",
+            "  ZH:Run AIEN + more ",
+            "12,345",
+            "ZH:Hello world"
+        ]
+    );
     assert_eq!(r["aien"]["translated"], 3);
     assert_eq!(r["aien"]["nothing_to_do"], 1);
 
@@ -119,9 +143,20 @@ async fn mismatched_batch_is_split_and_recovers() {
 async fn housekeeping_endpoints() {
     let base = start().await;
     let c = reqwest::Client::new();
-    let lang: Value = c.post(format!("{base}/language.json")).send().await.unwrap().json().await.unwrap();
+    let lang: Value = c
+        .post(format!("{base}/language.json"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(lang["result"], 1);
-    assert!(lang["list"].as_array().unwrap().iter().any(|l| l["id"] == "chinese_simplified"));
+    assert!(lang["list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|l| l["id"] == "chinese_simplified"));
 
     let ct: Value = c
         .post(format!("{base}/connectTest.json"))
@@ -157,7 +192,10 @@ async fn oversized_request_is_refused() {
 }
 
 fn sse(delta: &str) -> String {
-    format!("data: {}\n\n", json!({"choices": [{"index": 0, "delta": {"content": delta}}]}))
+    format!(
+        "data: {}\n\n",
+        json!({"choices": [{"index": 0, "delta": {"content": delta}}]})
+    )
 }
 
 /// The model finishes the list, then keeps writing junk (as seen on the real
@@ -217,9 +255,16 @@ async fn stops_reading_once_the_list_is_complete() {
     let took = t.elapsed();
     assert_eq!(r["result"], 1, "{r}");
     assert_eq!(r["text"], json!(["ZH:alpha", "ZH:beta"]));
-    assert!(took < std::time::Duration::from_millis(1500), "took {took:?}: kept reading after the list closed");
+    assert!(
+        took < std::time::Duration::from_millis(1500),
+        "took {took:?}: kept reading after the list closed"
+    );
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    assert!(junk_sent.load(Ordering::SeqCst) < 10, "fake engine kept streaming: {} junk chunks", junk_sent.load(Ordering::SeqCst));
+    assert!(
+        junk_sent.load(Ordering::SeqCst) < 10,
+        "fake engine kept streaming: {} junk chunks",
+        junk_sent.load(Ordering::SeqCst)
+    );
 }
 
 /// The model server answers 503 "busy, retry shortly" while it finishes a
@@ -262,5 +307,9 @@ async fn busy_engine_is_retried() {
     let r = post_like_translate_js(&base, &["alpha", "beta"]).await;
     assert_eq!(r["text"], json!(["ZH:alpha", "ZH:beta"]), "{r}");
     assert_eq!(r["aien"]["kept_original"], 0);
-    assert_eq!(calls.load(Ordering::SeqCst), 3, "one request, retried twice");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "one request, retried twice"
+    );
 }
