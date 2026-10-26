@@ -1,6 +1,6 @@
 //! End-to-end protocol tests against a fake engine (no GPU needed).
 
-use aien_translate::{app, cache::Cache, engine::Engine, AppState, Limits};
+use aien_translate::{app, cache::Cache, engine::Engine, Admission, AppState, Limits};
 use axum::{extract::State, routing::{get, post}, Json, Router};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -54,11 +54,12 @@ async fn start_with(fake: Router) -> String {
         engine: Engine::new(&format!("http://{faddr}")),
         cache: Cache::in_memory().unwrap(),
         keep: vec!["AIEN".into()],
-        limits: Limits { max_texts: 50, max_chars: 5000 },
+        limits: Limits { max_texts: 40, max_chars: 3000 },
+        admission: Admission::new(Some("test-token-0123456789012345678901234567".into())),
     });
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(l, app(state)).await.unwrap() });
+    tokio::spawn(async move { axum::serve(l, app(state).into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap() });
     format!("http://{addr}")
 }
 
@@ -71,6 +72,7 @@ async fn post_like_translate_js(base: &str, texts: &[&str]) -> Value {
     reqwest::Client::new()
         .post(format!("{base}/translate.json?v=4.1.0.20260526"))
         .header("content-type", "application/x-www-form-urlencoded")
+        .bearer_auth("test-token-0123456789012345678901234567")
         .body(body)
         .send()
         .await
@@ -78,6 +80,60 @@ async fn post_like_translate_js(base: &str, texts: &[&str]) -> Value {
         .json()
         .await
         .unwrap()
+}
+
+#[tokio::test]
+async fn anonymous_translation_cannot_use_inference() {
+    let (base, calls) = start_counted().await;
+    let response = reqwest::Client::new()
+        .post(format!("{base}/translate.json"))
+        .body("from=english&to=japanese&text=uncached")
+        .send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn bad_token_and_cross_origin_are_not_admitted() {
+    let (base, calls) = start_counted().await;
+    let client = reqwest::Client::new();
+    let rejected = client.post(format!("{base}/translate.json"))
+        .bearer_auth("wrong-token").body("to=japanese&text=uncached")
+        .send().await.unwrap();
+    assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let preflight = client.request(reqwest::Method::OPTIONS, format!("{base}/translate.json"))
+        .header("origin", "https://untrusted.example")
+        .header("access-control-request-method", "POST")
+        .send().await.unwrap();
+    assert!(preflight.headers().get("access-control-allow-origin").is_none());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let allowed = post_like_translate_js(&base, &["uncached"]).await;
+    assert_eq!(allowed["result"], 1, "{allowed}");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn peer_rate_limit_refuses_uncached_work() {
+    let (base, calls) = start_counted().await;
+    for n in 0..6 {
+        let text = format!("uncached {n}");
+        assert_eq!(post_like_translate_js(&base, &[&text]).await["result"], 1);
+    }
+    let response = reqwest::Client::new()
+        .post(format!("{base}/translate.json"))
+        .bearer_auth("test-token-0123456789012345678901234567")
+        .body("from=english&to=japanese&text=seventh")
+        .send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(calls.load(Ordering::SeqCst), 6);
+}
+
+#[test]
+fn non_loopback_binding_is_refused() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aien-translate"))
+        .args(["--listen", "0.0.0.0:0"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--listen must be loopback"));
 }
 
 #[tokio::test]
@@ -138,6 +194,7 @@ async fn housekeeping_endpoints() {
     let bad: Value = c
         .post(format!("{base}/translate.json"))
         .header("content-type", "application/x-www-form-urlencoded")
+        .bearer_auth("test-token-0123456789012345678901234567")
         .body("from=english&to=klingon&text=%5B%22hi%22%5D")
         .send()
         .await
@@ -154,6 +211,53 @@ async fn oversized_request_is_refused() {
     let many: Vec<&str> = vec!["x y"; 60];
     let r = post_like_translate_js(&base, &many).await;
     assert_eq!(r["result"], 0);
+}
+
+#[tokio::test]
+async fn body_limit_rejects_before_inference() {
+    let (base, calls) = start_counted().await;
+    let response = reqwest::Client::new()
+        .post(format!("{base}/translate.json"))
+        .bearer_auth("test-token-0123456789012345678901234567")
+        .body(format!("to=japanese&text={}", "x".repeat(17_000)))
+        .send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn in_flight_request_does_not_queue_another() {
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fake = Router::new()
+        .route("/v1/models", get(|| async { Json(json!({"data": [{"id": "fake-model"}]})) }))
+        .route("/v1/chat/completions", post({
+            let entered = entered.clone();
+            let release = release.clone();
+            move |Json(req): Json<Value>| {
+                let entered = entered.clone();
+                let release = release.clone();
+                let calls = calls.clone();
+                async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    fake_chat(State(calls), Json(req)).await
+                }
+            }
+        }));
+    let base = start_with(fake).await;
+    let first_base = base.clone();
+    let first = tokio::spawn(async move { post_like_translate_js(&first_base, &["first text"]).await });
+    tokio::time::timeout(std::time::Duration::from_secs(3), entered.notified()).await.unwrap();
+    let response = reqwest::Client::new()
+        .post(format!("{base}/translate.json"))
+        .bearer_auth("test-token-0123456789012345678901234567")
+        .body("from=english&to=japanese&text=second%20text")
+        .send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+    release.notify_one();
+    assert_eq!(first.await.unwrap()["result"], 1);
 }
 
 fn sse(delta: &str) -> String {
