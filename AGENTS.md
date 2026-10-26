@@ -30,13 +30,14 @@ Running the server for real needs a model server that offers `GET /v1/models` an
 All configuration is by flag; there is no config file and no environment variable besides `HOME` (used for the default cache path).
 
 ```
---listen     address to serve on
---engine     base URL of the model server
---cache      SQLite file for saved translations
---keep-file  names never translated, one per line (default: built-in list)
+--listen           loopback address only
+--engine           base URL of the model server
+--cache            SQLite file for saved translations
+--keep-file        names never translated, one per line (default: built-in list)
+--auth-token-file  local proxy bearer secret (required for public-site proxying)
 ```
 
-`./target/release/aien-translate --help` prints the defaults. Both default addresses are on loopback; pass `--listen` and `--engine` explicitly for any other setup.
+`./target/release/aien-translate --help` prints the defaults. The listener refuses non-loopback addresses. Public browser traffic must use a same-origin authenticated and per-visitor-rate-limited reverse proxy; the browser never receives the backend token. See `README.md` for the deployment contract.
 
 ## Usage
 
@@ -81,6 +82,7 @@ python3 demo/check.py URL   # needs Playwright and a served demo/ folder with tr
 - Real translation runs need a GPU-backed model server. Do not start one from this repository.
 - The cache file holds visitors' page text. Never commit it or attach it to an issue or pull request.
 - Machine-translated output (`docs/i18n/`, translated sites or papers) is published as machine translation, never presented as reviewed.
+- Translation admission is bounded in `src/lib.rs` (per-peer IP quota, one active request without queueing, request/body limits). Keep tests for unauthorized, saturated, and positive admission paths. The proxy sees real clients; the backend sees the proxy IP, so native quotas do not replace proxy quotas.
 - Work on a branch and merge through a pull request with the `cargo test` result in its body.
 
 ## Further reading

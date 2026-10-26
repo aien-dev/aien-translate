@@ -8,31 +8,35 @@ Translate your website into 31 languages with your own AI model. No API key, no 
 
 aien-translate is a translation server for [translate.js](https://github.com/xnx3/translate). It translates with AIEN's own inference runtime. It also works with any server that offers the same OpenAI-style chat API.
 
-## Translate your website in 3 steps
+## Translate your website
 
-**1. Start the server.** You need Rust and a running model server (AIEN's `aien-serve-http`, or any OpenAI-style chat server).
+**1. Start the server on loopback.** You need Rust and a running model server (AIEN's `aien-serve-http`, or any OpenAI-style chat server). Obtain the model server owner's approval before using a shared engine.
 
 ```
 git clone https://github.com/aien-dev/aien-translate
 cd aien-translate
 cargo build --release
-./target/release/aien-translate --listen 0.0.0.0:18097 --engine http://127.0.0.1:18091
+./target/release/aien-translate --engine http://127.0.0.1:18091
 ```
 
-**2. Add translate.js to your page.** Download `translate.js` from [its repository](https://github.com/xnx3/translate) and host it with your site. Then add these lines just before `</body>`, with your server's address:
+The server refuses non-loopback `--listen` addresses. For a local-only test, the default loopback listener needs no token. **For a public site**, create a private, randomly generated single-line token file (at least 32 bytes; owner-readable only), then start with `--auth-token-file /private/path/token`. Publish only a same-origin HTTPS reverse-proxy route to this loopback service. The proxy must authenticate/authorize visitors, reject cross-site requests (check `Origin` or Fetch Metadata and use CSRF protection for cookie-authenticated users), rate-limit by its verified client identity (not client-supplied forwarding headers), cap request size, reject excess work without queueing, strip client `Authorization` headers, and set the backend `Authorization: Bearer <token>` header itself. Restrict direct access to the listener to the proxy account. Do not embed the token in JavaScript or expose this service directly: the backend sends no CORS allow-origin header, and CORS was never authentication. If your public site permits anonymous visitors, the proxy must still enforce per-visitor quotas and abuse controls before it forwards requests.
+
+**2. Add translate.js to your page, behind the same-origin proxy.** Download `translate.js` from [its repository](https://github.com/xnx3/translate) and host it with your site. Then add these lines just before `</body>`:
 
 ```html
 <script src="/translate.js"></script>
 <script>
   translate.service.use('translate.service');
-  translate.request.setHost('https://your-server.example/');
+  translate.request.setHost(window.location.origin + '/');
   translate.execute();
 </script>
 ```
 
-**3. Open your page.** A language menu appears, and choosing a language translates the page in place. To pick a language from your own code, call `translate.changeLanguage('japanese')`.
+**3. Open your page.** A language menu appears, and choosing a language translates the page in place. To pick a language from your own code, call `translate.changeLanguage('japanese')`. The browser must reach the proxy on the same origin; the localhost backend is not reachable from a remote visitor.
 
-### Check that it works
+### Check locally
+
+With no token configured, the loopback-only server responds to:
 
 ```
 curl http://127.0.0.1:18097/health
@@ -40,7 +44,7 @@ curl -X POST http://127.0.0.1:18097/translate.json \
   -d 'from=english&to=japanese&text=%5B%22Hello%20world%22%5D'
 ```
 
-The first command reports the model in use. The second returns the translation in `"text"`, for example `["こんにちは世界"]`.
+With `--auth-token-file`, the proxy must add the bearer header; unauthenticated requests receive HTTP 401. The first command reports the model in use. The second returns the translation in `"text"`, for example `["こんにちは世界"]`.
 
 ## What it protects
 
@@ -62,13 +66,16 @@ If any check fails, the visitor sees the original text instead of a broken trans
 ## Options
 
 ```
---listen     address to serve on        (default 127.0.0.1:18097)
---engine     model server               (default http://127.0.0.1:18091)
---cache      saved translations         (default ~/.local/state/aien-translate/cache.sqlite)
---keep-file  names never translated, one per line
+--listen           loopback address only          (default 127.0.0.1:18097)
+--engine           model server                   (default http://127.0.0.1:18091)
+--cache            saved translations             (default ~/.local/state/aien-translate/cache.sqlite)
+--keep-file        names never translated, one per line
+--auth-token-file  bearer secret for a trusted local proxy
 ```
 
-Endpoints: `/translate.json`, `/language.json`, `/connectTest.json`, `/init.json` and `/health`. `/ip.json` (location lookup) is not offered.
+Each translation request is limited to 40 texts, 3,000 characters and a 16 KiB body. The server admits at most six translation requests per minute from each directly connected IP, tracks at most 1,024 IPs, and admits only one translation request at a time (HTTP 429 rather than waiting in an inference queue). Behind a proxy, the backend sees only the proxy IP; these limits **do not replace the proxy's per-visitor rate limit**. Slow or restarting model requests can still occupy the one active slot for a long time.
+
+Endpoints: `/translate.json`, `/language.json`, `/connectTest.json`, `/init.json` and `/health`. `/ip.json` (location lookup) is not offered. With a token, `/translate.json` and `/health` require it.
 
 ## Languages
 

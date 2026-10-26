@@ -14,15 +14,18 @@ pub mod langs;
 
 use axum::{
     body::Bytes,
-    extract::State,
-    http::{header, HeaderMap, Uri},
+    extract::{ConnectInfo, DefaultBodyLimit, State},
+    http::{header, HeaderMap, StatusCode, Uri},
     routing::{any, get},
     Json, Router,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::Arc;
-use tower_http::cors::CorsLayer;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
+use subtle::ConstantTimeEq;
 
 /// Bump when the prompt changes, so old saved translations are not reused.
 pub const PROMPT_VERSION: &str = "p4";
@@ -44,7 +47,57 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { max_texts: 1000, max_chars: 100_000 }
+        Self { max_texts: 40, max_chars: 3000 }
+    }
+}
+
+const MAX_REQUEST_BYTES: usize = 16_384;
+const CLIENTS_MAX: usize = 1024;
+const REQUESTS_PER_MINUTE: u8 = 6;
+
+struct ClientWindow {
+    started: Instant,
+    requests: u8,
+}
+
+/// A bounded, non-queuing admission gate. Socket IPs are used, not spoofable
+/// forwarding headers. A reverse proxy must rate-limit its own real clients.
+pub struct Admission {
+    token: Option<String>,
+    active: Semaphore,
+    clients: Mutex<HashMap<std::net::IpAddr, ClientWindow>>,
+}
+
+impl Admission {
+    pub fn new(token: Option<String>) -> Self {
+        Self { token, active: Semaphore::new(1), clients: Mutex::new(HashMap::new()) }
+    }
+
+    fn authorized(&self, headers: &HeaderMap) -> bool {
+        let Some(token) = &self.token else { return true };
+        let Some(supplied) = headers.get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer ")) else { return false };
+        supplied.len() == token.len() && bool::from(supplied.as_bytes().ct_eq(token.as_bytes()))
+    }
+
+    fn allow_client(&self, addr: SocketAddr) -> bool {
+        let now = Instant::now();
+        let mut clients = self.clients.lock().unwrap();
+        if clients.len() >= CLIENTS_MAX {
+            clients.retain(|_, window| now.duration_since(window.started) < Duration::from_secs(60));
+        }
+        let ip = addr.ip();
+        if !clients.contains_key(&ip) && clients.len() == CLIENTS_MAX {
+            return false;
+        }
+        let window = clients.entry(ip).or_insert(ClientWindow { started: now, requests: 0 });
+        if now.duration_since(window.started) >= Duration::from_secs(60) {
+            *window = ClientWindow { started: now, requests: 0 };
+        }
+        if window.requests >= REQUESTS_PER_MINUTE { return false }
+        window.requests += 1;
+        true
     }
 }
 
@@ -53,6 +106,7 @@ pub struct AppState {
     pub cache: cache::Cache,
     pub keep: Vec<String>,
     pub limits: Limits,
+    pub admission: Admission,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,23 +310,36 @@ fn fail(info: impl Into<String>) -> Json<Value> {
     Json(json!({"result": 0, "info": info.into()}))
 }
 
-async fn translate_h(State(st): State<Arc<AppState>>, uri: Uri, headers: HeaderMap, body: Bytes) -> Json<Value> {
+async fn translate_h(
+    State(st): State<Arc<AppState>>, ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    uri: Uri, headers: HeaderMap, body: Bytes,
+) -> (StatusCode, Json<Value>) {
+    if !st.admission.authorized(&headers) {
+        return (StatusCode::UNAUTHORIZED, fail("unauthorized"));
+    }
+    if uri.query().is_some_and(|q| q.len() > MAX_REQUEST_BYTES) {
+        return (StatusCode::PAYLOAD_TOO_LARGE, fail("request too large"));
+    }
     let p = params(&uri, &headers, &body);
     let (Some(to), Some(text)) = (p.get("to"), p.get("text")) else {
-        return fail("missing 'to' or 'text'");
+        return (StatusCode::BAD_REQUEST, fail("missing 'to' or 'text'"));
     };
     let from = p.get("from").cloned().unwrap_or_default();
     let texts = parse_text(text);
     let chars: usize = texts.iter().map(|t| t.chars().count()).sum();
     if texts.len() > st.limits.max_texts || chars > st.limits.max_chars {
-        return fail(format!(
+        return (StatusCode::PAYLOAD_TOO_LARGE, fail(format!(
             "request too large: {} texts / {chars} characters (limit {} / {})",
-            texts.len(),
-            st.limits.max_texts,
-            st.limits.max_chars
-        ));
+            texts.len(), st.limits.max_texts, st.limits.max_chars
+        )));
     }
-    match translate_texts(&st, &from, to, &texts).await {
+    if !st.admission.allow_client(peer) {
+        return (StatusCode::TOO_MANY_REQUESTS, fail("client rate limit"));
+    }
+    let Ok(_permit) = st.admission.active.try_acquire() else {
+        return (StatusCode::TOO_MANY_REQUESTS, fail("translation busy"));
+    };
+    let response = match translate_texts(&st, &from, to, &texts).await {
         Ok((out, s)) => Json(json!({
             "result": 1,
             "info": "success",
@@ -287,8 +354,10 @@ async fn translate_h(State(st): State<Arc<AppState>>, uri: Uri, headers: HeaderM
             },
         })),
         Err(e) => fail(e),
-    }
+    };
+    (StatusCode::OK, response)
 }
+
 
 async fn language_h() -> Json<Value> {
     let list: Vec<Value> = langs::LANGS
@@ -311,10 +380,13 @@ async fn ip_h() -> Json<Value> {
     fail("location lookup is not offered by this server")
 }
 
-async fn health_h(State(st): State<Arc<AppState>>) -> Json<Value> {
+async fn health_h(State(st): State<Arc<AppState>>, headers: HeaderMap) -> (StatusCode, Json<Value>) {
+    if !st.admission.authorized(&headers) {
+        return (StatusCode::UNAUTHORIZED, fail("unauthorized"));
+    }
     match st.engine.model().await {
-        Ok(m) => Json(json!({"result": 1, "info": "ok", "model": m, "languages": langs::LANGS.len()})),
-        Err(e) => fail(e),
+        Ok(m) => (StatusCode::OK, Json(json!({"result": 1, "info": "ok", "model": m, "languages": langs::LANGS.len()}))),
+        Err(e) => (StatusCode::OK, fail(e)),
     }
 }
 
@@ -326,7 +398,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/init.json", any(init_h))
         .route("/ip.json", any(ip_h))
         .route("/health", get(health_h))
-        .layer(CorsLayer::permissive())
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .with_state(state)
 }
 
