@@ -49,7 +49,7 @@ O primeiro comando relata o modelo em uso. O segundo retorna a tradução em `"t
 Toda tradução é verificada antes que um visitante a veja:
 
 - Links, endereços de e-mail, códigos entre acentos graves e placeholders como `{name}` ou `%s` devem passar sem alterações.
-- Nomes de produtos na lista de proteção (AIEN, Omega, Allen e outros) nunca são traduzidos. Use `--keep-file` para fornecer sua própria lista.
+- Nomes de produtos na lista de proteção (AIEN, Omega, Aien e outros) nunca são traduzidos. Use `--keep-file` para fornecer sua própria lista.
 - Uma tradução vazia ou muito mais longa que o original é descartada.
 
 Se qualquer verificação falhar, o visitante verá o texto original em vez de uma tradução corrompida.

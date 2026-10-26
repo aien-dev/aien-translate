@@ -51,7 +51,7 @@ With `--auth-token-file`, the proxy must add the bearer header; unauthenticated 
 Every translation is checked before a visitor sees it:
 
 - Links, email addresses, code in backticks, and placeholders such as `{name}` or `%s` must come through unchanged.
-- Product names on the keep list (AIEN, Omega, Allen, and others) are never translated. Use `--keep-file` to supply your own list.
+- Product names on the keep list (AIEN, Omega, Aien, and others) are never translated. Use `--keep-file` to supply your own list.
 - A translation that is empty, or far longer than the original, is thrown away.
 
 If any check fails, the visitor sees the original text instead of a broken translation.
