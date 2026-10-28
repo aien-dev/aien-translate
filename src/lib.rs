@@ -28,13 +28,16 @@ use tokio::sync::Semaphore;
 use subtle::ConstantTimeEq;
 
 /// Bump when the prompt changes, so old saved translations are not reused.
-pub const PROMPT_VERSION: &str = "p4";
+/// p5: the keep list (part of the prompt) gained "Aien".
+pub const PROMPT_VERSION: &str = "p5";
 
 /// Names that are never translated unless the operator overrides the list.
+/// "Allen" is the assistant's former name; it stays listed because quotes and
+/// history notes on the site still name it, and those must not be translated.
 pub const DEFAULT_KEEP: &[&str] = &[
-    "AIEN", "AIENOS", "Aienix", "Omega", "OMEGA", "Interplane", "INTERPLANE", "Allen", "Synapse",
-    "Atlas", "Cortex", "Radicle", "Spark", "DGX", "GB10", "NVIDIA", "translate.js", "GitHub", "Rust",
-    "Linux",
+    "AIEN", "AIENOS", "Aienix", "Aien", "Omega", "OMEGA", "Interplane", "INTERPLANE", "Allen",
+    "Synapse", "Atlas", "Cortex", "Radicle", "Spark", "DGX", "GB10", "NVIDIA", "translate.js",
+    "GitHub", "Rust", "Linux",
 ];
 
 const BATCH_ITEMS: usize = 40;
@@ -425,5 +428,15 @@ mod tests {
         assert_eq!(parse_text("[\"a\",\"b\"]"), vec!["a", "b"]);
         assert_eq!(parse_text("%5B%22a%22%5D"), vec!["a"]);
         assert_eq!(parse_text("plain"), vec!["plain"]);
+    }
+
+    #[test]
+    fn default_keep_protects_aien_and_its_former_name() {
+        let keep: Vec<String> = DEFAULT_KEEP.iter().map(|s| s.to_string()).collect();
+        let p = guard::protected("Aien runs on Aienux; he used to be called Allen.", &keep);
+        assert!(p.contains(&"Aien".to_string()), "{p:?}");
+        assert!(p.contains(&"Allen".to_string()), "{p:?}");
+        assert!(guard::check("Aien is here", "Aien est ici", &keep).is_none());
+        assert!(guard::check("Aien is here", "艾恩在这里", &keep).is_some());
     }
 }
