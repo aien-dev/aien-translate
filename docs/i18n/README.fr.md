@@ -49,7 +49,7 @@ La première commande indique le modèle utilisé. La deuxième retourne la trad
 Chaque traduction est vérifiée avant que le visiteur ne la voie :
 
 - Les liens, les adresses e-mail, le code entre backticks, et les espaces réservés tels que `{name}` ou `%s` doivent passer sans modification.
-- Les noms de produits figurant sur la liste de conservation (AIEN, Omega, Aien, etc.) ne sont jamais traduits. Utilisez `--keep-file` pour fournir votre propre liste.
+- Les noms de produits figurant sur la liste de conservation (AIEN, Omega, Allen, etc.) ne sont jamais traduits. Utilisez `--keep-file` pour fournir votre propre liste.
 - Une traduction vide, ou beaucoup plus longue que l'original, est rejetée.
 
 Si une vérification échoue, le visiteur voit le texte original au lieu d'une traduction corrompue.

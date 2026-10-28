@@ -49,7 +49,7 @@ Der erste Befehl meldet das verwendete Modell. Der zweite gibt die Übersetzung 
 Jede Übersetzung wird überprüft, bevor ein Besucher sie sieht:
 
 - Links, E-Mail-Adressen, Code in Backticks und Platzhalter wie `{name}` oder `%s` müssen unverändert durchkommen.
-- Produktnamen auf der Whitelist (AIEN, Omega, Aien und andere) werden niemals übersetzt. Verwenden Sie `--keep-file`, um Ihre eigene Liste bereitzustellen.
+- Produktnamen auf der Whitelist (AIEN, Omega, Allen und andere) werden niemals übersetzt. Verwenden Sie `--keep-file`, um Ihre eigene Liste bereitzustellen.
 - Eine leere Übersetzung oder eine, die deutlich länger als der Originaltext ist, wird verworfen.
 
 Wenn eine Überprüfung fehlschlägt, sieht der Besucher stattdessen den ursprünglichen Text anstelle einer fehlerhaften Übersetzung.
