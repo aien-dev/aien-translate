@@ -41,7 +41,7 @@ fn contains_word(text: &str, term: &str) -> bool {
         let i = start + pos;
         let before = text[..i].chars().next_back();
         let after = text[i + term.len()..].chars().next();
-        let edge = |c: Option<char>| c.map_or(true, |c| !c.is_alphanumeric());
+        let edge = |c: Option<char>| match c { None => true, Some(c) => !c.is_alphanumeric() };
         if edge(before) && edge(after) {
             return true;
         }
